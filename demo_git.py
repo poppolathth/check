@@ -26,24 +26,34 @@ def fill_google_form():
             return False
 
         def get_questions():
+            """
+            ดึงข้อมูลคำถามทั้งหมดจากแบบฟอร์ม Google Form
+            รองรับคำถามประเภท: grid, radio, checkbox, และ text
+            """
             try:
                 elements = page.query_selector_all("div[role='listitem']")
                 questions = []
                 
                 def is_grid_question(element):
-                    # ตรวจสอบว่าเป็นคำถามแบบกริดหรือไม่
+                    """ตรวจสอบว่าเป็นคำถามแบบตารางกริดหรือไม่"""
                     choices = element.query_selector_all("div[role='radio']")
                     if not choices:
                         return False
                     first_choice = choices[0].get_attribute("aria-label")
                     return first_choice and "เป็นคำตอบสำหรับ" in first_choice
 
+                def is_checkbox_question(element):
+                    """ตรวจสอบว่าเป็นคำถามแบบเลือกได้หลายข้อหรือไม่"""
+                    return bool(element.query_selector("div[role='checkbox']"))
+
                 def extract_question_from_choice(choice_text):
+                    """แยกข้อความคำถามจากตัวเลือกในคำถามแบบกริด"""
                     if "เป็นคำตอบสำหรับ" in choice_text:
                         return choice_text.split("เป็นคำตอบสำหรับ")[1].strip()
                     return None
 
                 def group_choices_by_question(choices):
+                    """จัดกลุ่มตัวเลือกตามคำถามย่อยในคำถามแบบกริด"""
                     question_groups = {}
                     for choice in choices:
                         question_text = extract_question_from_choice(choice["label"])
@@ -53,71 +63,192 @@ def fill_google_form():
                             question_groups[question_text].append(choice)
                     return question_groups
 
-                for element in elements:
-                    section_title = element.query_selector("div[role='heading']")
-                    if section_title:
-                        print(f"\n=== {section_title.inner_text().strip()} ===\n")
+                def get_choice_label(container):
+                    """ดึงข้อความของตัวเลือกจาก container"""
+                    label_elements = [
+                        container.query_selector("span.aDTYNe"),
+                        container.query_selector("div.YEVVod"),
+                        container.query_selector("div.ulDsOb")
+                    ]
+                    for label_el in label_elements:
+                        if label_el:
+                            label_text = label_el.inner_text().strip()
+                            if label_text:
+                                return label_text
+                    return "(ไม่มีข้อความ)"
 
-                    if is_grid_question(element):
-                        # จัดการกับคำถามแบบกริด
-                        choice_elements = element.query_selector_all("div[role='radio']")
-                        all_choices = []
-                        
-                        for choice_el in choice_elements:
-                            label = choice_el.get_attribute("aria-label")
-                            if label:
-                                all_choices.append({
-                                    "element": choice_el,
-                                    "label": label
+                def get_other_option(element, role):
+                    """ดึงข้อมูลตัวเลือก "อื่นๆ" """
+                    other_container = element.query_selector("div.nWQGrd.zfdaxb")
+                    if other_container:
+                        other_element = other_container.query_selector(f"div[role='{role}']")
+                        if other_element:
+                            return {
+                                "element": other_element,
+                                "label": "อื่นๆ",
+                                "is_other": True,
+                                "text_input": element.query_selector("input[type='text']")
+                            }
+                    return None
+
+                def get_choices(element, role):
+                    """ดึงข้อมูลตัวเลือกทั้งหมดของคำถาม"""
+                    choices = []
+                    
+                    # ดึงตัวเลือกปกติ (ไม่รวม "อื่นๆ")
+                    containers = element.query_selector_all(f"div.nWQGrd:not(.zfdaxb)")
+                    for container in containers:
+                        choice_el = container.query_selector(f"div[role='{role}']")
+                        if choice_el:
+                            label = get_choice_label(container)
+                            choices.append({
+                                "element": choice_el,
+                                "label": label,
+                                "is_other": False
+                            })
+
+                    # ดึงตัวเลือก "อื่นๆ"
+                    other_option = get_other_option(element, role)
+                    if other_option:
+                        choices.append(other_option)
+
+                    return choices
+
+                for element in elements:
+                    try:
+                        # ดึงข้อความคำถาม
+                        question_text_el = (
+                            element.query_selector("div[role='heading']") or 
+                            element.query_selector("span.M7eMe") or
+                            element.query_selector("div.M7eMe")
+                        )
+                        question_text = question_text_el.inner_text().strip() if question_text_el else "ส่วนที่ไม่มีชื่อ"
+
+                        if is_grid_question(element):
+                            # จัดการกับคำถามแบบกริด
+                            choice_elements = element.query_selector_all("div[role='radio']")
+                            all_choices = []
+                            
+                            for choice_el in choice_elements:
+                                label = choice_el.get_attribute("aria-label")
+                                if label:
+                                    all_choices.append({
+                                        "element": choice_el,
+                                        "label": label
+                                    })
+
+                            question_groups = group_choices_by_question(all_choices)
+
+                            for sub_question, choices in question_groups.items():
+                                questions.append({
+                                    "type": "grid",
+                                    "text": sub_question,
+                                    "choices": sorted(choices, key=lambda x: "มากที่สุด" in x["label"], reverse=True),
+                                    "element": element
                                 })
 
-                        question_groups = group_choices_by_question(all_choices)
+                        elif is_checkbox_question(element):
+                            # จัดการกับคำถามแบบเลือกได้หลายข้อ
+                            choices = get_choices(element, 'checkbox')
+                            if choices:  # เพิ่มคำถามเฉพาะเมื่อมีตัวเลือก
+                                questions.append({
+                                    "type": "checkbox",
+                                    "text": question_text,
+                                    "element": element,
+                                    "choices": choices
+                                })
 
-                        for question_text, choices in question_groups.items():
-                            questions.append({
-                                "type": "grid",
-                                "text": question_text,
-                                "choices": sorted(choices, key=lambda x: "มากที่สุด" in x["label"], reverse=True)
-                            })
-                    else:
-                        # จัดการกับคำถามแบบอื่นๆ
-                        question_text_el = element.query_selector("div[role='heading']") or element.query_selector("span")
-                        if question_text_el:
-                            question_text = question_text_el.inner_text().strip()
+                        else:
+                            # จัดการกับคำถามแบบเลือกได้ข้อเดียวและข้อความ
+                            radio_choices = get_choices(element, 'radio')
                             
-                            # ตรวจสอบประเภทของคำถาม
-                            input_type = "text"  # ค่าเริ่มต้นเป็นแบบข้อความ
-                            choices = []
-                            
-                            # ตรวจสอบตัวเลือกแบบ radio
-                            radio_elements = element.query_selector_all("div[role='radio']")
-                            if radio_elements:
-                                input_type = "radio"
-                                for radio_el in radio_elements:
-                                    label = radio_el.get_attribute("aria-label")
-                                    if label:
-                                        choices.append({
-                                            "element": radio_el,
-                                            "label": label
-                                        })
-                            
-                            # ตรวจสอบ text input
-                            text_input = element.query_selector("input[type='text']")
-                            if text_input:
-                                input_type = "text"
+                            if radio_choices:
+                                questions.append({
+                                    "type": "radio",
+                                    "text": question_text,
+                                    "element": element,
+                                    "choices": radio_choices
+                                })
+                            else:
+                                # ตรวจสอบ text input
+                                text_input = element.query_selector("input[type='text']")
+                                if text_input:
+                                    questions.append({
+                                        "type": "text",
+                                        "text": question_text,
+                                        "element": element,
+                                        "choices": []
+                                    })
 
-                            questions.append({
-                                "type": input_type,
-                                "text": question_text,
-                                "element": element,
-                                "choices": choices
-                            })
+                    except Exception as e:
+                        print(f"ข้อผิดพลาดในการประมวลผลคำถาม: {e}")
+                        continue
+
+                # Debug information
+                if not questions:
+                    print("ไม่พบคำถามในฟอร์ม")
+                else:
+                    print(f"พบคำถามทั้งหมด {len(questions)} ข้อ")
+                    for i, q in enumerate(questions, 1):
+                        print(f"{i}. ประเภท: {q['type']}, คำถาม: {q['text']}, ตัวเลือก: {len(q.get('choices', []))}")
 
                 return questions
 
             except Exception as e:
                 print(f"เกิดข้อผิดพลาดในการดึงคำถาม: {e}")
-                return []
+                return []        
+        
+        
+        def fill_checkbox_question(question):
+            try:
+                print(f"\nคำถาม: {question['text']}")
+                
+                if not question['choices']:
+                    print("ไม่พบตัวเลือกสำหรับคำถามนี้")
+                    return
+                    
+                print("\nตัวเลือก:")
+                for i, choice in enumerate(question["choices"], 1):
+                    print(f"  {i}. {choice['label']}")
+                
+                print("\nวิธีการตอบ:")
+                print("- ใส่ตัวเลขเดียวเพื่อเลือก 1 ตัวเลือก เช่น: 1")
+                print("- ใส่ตัวเลขคั่นด้วยจุดเพื่อเลือกหลายตัวเลือก เช่น: 1.2.4")
+                
+                while True:
+                    choice_input = input(f"\n→ เลือกตัวเลือก (1-{len(question['choices'])}) หรือกด Enter เพื่อข้าม: ").strip()
+                    
+                    if choice_input == "":
+                        print("ข้ามไปข้อถัดไป...")
+                        break
+
+                    choices = choice_input.split('.')
+                    valid_choices = True
+                    
+                    for choice in choices:
+                        if not choice.isdigit() or not (1 <= int(choice) <= len(question["choices"])):
+                            valid_choices = False
+                            print(f"กรุณาเลือกตัวเลขระหว่าง 1-{len(question['choices'])}")
+                            break
+
+                    if valid_choices:
+                        for choice_num in choices:
+                            selected = question["choices"][int(choice_num) - 1]
+                            
+                            if safe_click(selected["element"]):
+                                print(f"เลือกตัวเลือกที่ {choice_num} สำเร็จ")
+                                
+                                if selected.get("is_other"):
+                                    # รอให้ช่องกรอกข้อความปรากฏ
+                                    time.sleep(0.5)
+                                    other_text = input("→ กรุณากรอกข้อความสำหรับ 'อื่นๆ': ").strip()
+                                    if other_text and selected.get("text_input"):
+                                        selected["text_input"].fill(other_text)
+                                        print("กรอกข้อความสำหรับ 'อื่นๆ' สำเร็จ")
+                        break
+
+            except Exception as e:
+                print(f"เกิดข้อผิดพลาดในการกรอกคำถามแบบหลายตัวเลือก: {e}")
 
         def validate_rating_input(input_text):
             """Validate rating input"""
@@ -192,9 +323,24 @@ def fill_google_form():
                     if choice_input.isdigit():
                         choice_num = int(choice_input)
                         if 1 <= choice_num <= len(question['choices']):
-                            choice = question['choices'][choice_num - 1]
-                            if safe_click(choice["element"]):
+                            selected = question['choices'][choice_num - 1]
+                            
+                            # คลิกที่ตัวเลือก
+                            if safe_click(selected["element"]):
                                 print(f"เลือกตัวเลือกที่ {choice_num} สำเร็จ")
+                                
+                                # ตรวจสอบว่าเป็นตัวเลือก "อื่นๆ" หรือไม่
+                                if "อื่น" in selected["label"].lower():
+                                    # รอสักครู่เพื่อให้ช่องกรอกข้อความปรากฏ
+                                    time.sleep(0.5)
+                                    
+                                    # ค้นหาช่องกรอกข้อความสำหรับ "อื่นๆ"
+                                    other_input = question["element"].query_selector("input[type='text']")
+                                    if other_input:
+                                        other_text = input("→ กรุณากรอกข้อความสำหรับ 'อื่นๆ': ").strip()
+                                        if other_text:
+                                            other_input.fill(other_text)
+                                            print("กรอกข้อความสำหรับ 'อื่นๆ' สำเร็จ")
                                 break
                         else:
                             print(f"กรุณาเลือกตัวเลขระหว่าง 1-{len(question['choices'])}")
@@ -229,6 +375,8 @@ def fill_google_form():
                     fill_grid_question(question)
                 elif question["type"] == "radio":
                     fill_radio_question(question)
+                elif question["type"] == "checkbox":
+                    fill_checkbox_question(question)
                 elif question["type"] == "text":
                     fill_text_question(question)
                 print("-" * 50)
