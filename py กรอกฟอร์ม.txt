@@ -1,0 +1,90 @@
+from playwright.sync_api import sync_playwright
+
+def fill_google_form():
+    with sync_playwright() as p:
+        # เปิดเบราว์เซอร์
+        browser = p.chromium.launch(headless=False)
+        context = browser.new_context()
+        page = context.new_page()
+
+        # URL ของ Google Form
+        form_url = "https://forms.gle/7XhH7HpNVgCQ3Neo7"
+        page.goto(form_url)
+
+        def get_questions():
+            # ดึงคำถามในหน้าฟอร์มปัจจุบัน
+            try:
+                elements = page.query_selector_all("div[role='listitem']")
+                questions = []
+                for element in elements:
+                    question_text = element.query_selector("span")
+                    if question_text:
+                        questions.append({
+                            "element": element,
+                            "text": question_text.inner_text().strip()
+                        })
+                return questions
+            except Exception as e:
+                print(f"Error while fetching questions: {e}")
+                return []
+
+        def fill_question(question):
+            # กรอกคำตอบในคำถาม
+            try:
+                print(f"{question['text']} (กรอกคำตอบแล้ว Enter): ", end="")
+                answer = input().strip()
+                text_input = question["element"].query_selector("input[type='text']")
+                if text_input:
+                    text_input.fill(answer)
+            except Exception as e:
+                print(f"Error while filling question: {e}")
+
+        def click_next_or_submit():
+            # คลิกปุ่ม "ถัดไป" หรือ "ส่ง"
+            try:
+                next_button_selector = "div[role='button'][aria-label*='ถัดไป'], div.uArJ5e.UQuaGc.YhQJj.zo8FOc.ctEux"
+                submit_button_selector = "div[role='button'][aria-label*='ส่ง'], div.uArJ5e.UQuaGc.YhQJj.zo8FOc.ctEux"
+
+                # รอให้ปุ่ม "ถัดไป" หรือ "ส่ง" ปรากฏในหน้า
+                page.wait_for_selector(next_button_selector, timeout=5000)
+                page.wait_for_selector(submit_button_selector, timeout=5000)
+
+                if page.locator(next_button_selector).is_visible():
+                    page.locator(next_button_selector).click(force=True)
+                    print("คลิกปุ่ม 'ถัดไป'")
+                    page.wait_for_load_state("networkidle")  # รอให้หน้าใหม่โหลด
+                    return True
+                elif page.locator(submit_button_selector).is_visible():
+                    page.locator(submit_button_selector).click(force=True)
+                    print("คลิกปุ่ม 'ส่งคำตอบ'")
+                    page.wait_for_load_state("networkidle")  # รอให้การส่งเสร็จสมบูรณ์
+                    return False
+                else:
+                    print("ไม่พบปุ่ม 'ถัดไป' หรือ 'ส่ง'")
+                    return False
+            except Exception as e:
+                print(f"Error while clicking next or submit: {e}")
+                return False
+
+        try:
+            # Loop ผ่านคำถามในแต่ละหน้า
+            while True:
+                questions = get_questions()
+                if not questions:
+                    print("ไม่มีคำถามในหน้านี้ หรือหน้าฟอร์มโหลดไม่สำเร็จ")
+                    break
+
+                for question in questions:
+                    fill_question(question)
+
+                if not click_next_or_submit():
+                    break
+        except Exception as e:
+            print(f"Unexpected error: {e}")
+        finally:
+            # ปิดเบราว์เซอร์
+            print("ปิดเบราว์เซอร์")
+            browser.close()
+
+if __name__ == "__main__":
+    fill_google_form()
