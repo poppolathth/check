@@ -1,13 +1,12 @@
 from playwright.sync_api import sync_playwright
+import time
 
 def fill_google_form():
     with sync_playwright() as p:
-        # เปิดเบราว์เซอร์
         browser = p.chromium.launch(headless=False)
         context = browser.new_context()
         page = context.new_page()
 
-        # URL ของ Google Form
         form_url = "https://forms.gle/7XhH7HpNVgCQ3Neo7"
         page.goto(form_url)
 
@@ -15,122 +14,127 @@ def fill_google_form():
             try:
                 elements = page.query_selector_all("div[role='listitem']")
                 questions = []
+                
+                # สร้างฟังก์ชันช่วยในการแยกคำถามและตัวเลือก
+                def extract_question_from_choice(choice_text):
+                    # แยกส่วนที่เป็นคำถามออกจากตัวเลือก
+                    if "เป็นคำตอบสำหรับ" in choice_text:
+                        return choice_text.split("เป็นคำตอบสำหรับ")[1].strip()
+                    return None
+
+                def group_choices_by_question(choices):
+                    # จัดกลุ่มตัวเลือกตามคำถาม
+                    question_groups = {}
+                    for choice in choices:
+                        question_text = extract_question_from_choice(choice["label"])
+                        if question_text:
+                            if question_text not in question_groups:
+                                question_groups[question_text] = []
+                            question_groups[question_text].append(choice)
+                    return question_groups
+
                 for element in elements:
-                    question_text_el = element.query_selector("div[data-params] span")
-                    question_text = question_text_el.inner_text().strip() if question_text_el else "ส่วนที่ไม่มีชื่อ"
+                    section_title = element.query_selector("div[role='heading']")
+                    if section_title:
+                        print(f"\n=== {section_title.inner_text().strip()} ===\n")
 
-                    # ตรวจสอบว่าคำถามมีคำถามย่อย (เช่นแบบกริด)
-                    sub_question_elements = element.query_selector_all("div[role='gridcell']")
-                    if sub_question_elements:
-                        sub_questions = []
-                        for sub_element in sub_question_elements:
-                            sub_text_el = sub_element.query_selector("span")
-                            sub_text = sub_text_el.inner_text().strip() if sub_text_el else "(ไม่มีข้อความ)"
-
-                            # หา choices สำหรับคำถามย่อย
-                            choice_els = sub_element.query_selector_all("div[role='radio'], div[role='checkbox']")
-                            choices = []
-                            for choice_el in choice_els:
-                                label_text = choice_el.get_attribute("aria-label") or "(ไม่มีข้อความ)"
-                                choices.append({
-                                    "element": choice_el,
-                                    "label": label_text,
-                                })
-
-                            sub_questions.append({
-                                "element": sub_element,
-                                "text": sub_text,
-                                "choices": choices
-                            })
-
-                        questions.append({
-                            "element": element,
-                            "text": question_text,
-                            "type": "grid",
-                            "sub_questions": sub_questions
-                        })
-                    else:
-                        # กรณีคำถามปกติ
-                        choice_els = element.query_selector_all("div[role='radio'], div[role='checkbox']")
-                        choices = []
-                        for choice_el in choice_els:
-                            label_text = choice_el.get_attribute("aria-label") or "(ไม่มีข้อความ)"
-                            choices.append({
+                    # ดึงตัวเลือกทั้งหมดในส่วนนี้
+                    choice_elements = element.query_selector_all("div[role='radio']")
+                    all_choices = []
+                    
+                    for choice_el in choice_elements:
+                        label = choice_el.get_attribute("aria-label")
+                        if label:
+                            all_choices.append({
                                 "element": choice_el,
-                                "label": label_text,
+                                "label": label
                             })
 
+                    # จัดกลุ่มตัวเลือกตามคำถาม
+                    question_groups = group_choices_by_question(all_choices)
+
+                    # สร้างคำถามจากกลุ่มตัวเลือก
+                    for question_text, choices in question_groups.items():
                         questions.append({
-                            "element": element,
                             "text": question_text,
-                            "choices": choices,
-                            "type": "single"
+                            "choices": sorted(choices, key=lambda x: "มากที่สุด" in x["label"], reverse=True)
                         })
+
                 return questions
+
             except Exception as e:
                 print(f"Error while fetching questions: {e}")
                 return []
 
-
-
         def fill_question(question):
             try:
-                print(f"{question['text']}")
+                print(f"\nคำถาม: {question['text']}")
+                print("\nตัวเลือก:")
+                for i, choice in enumerate(question['choices'], 1):
+                    # แสดงเฉพาะระดับคะแนน
+                    level = ""
+                    if "มากที่สุด (5)" in choice["label"]: level = "5 - มากที่สุด"
+                    elif "มาก (4)" in choice["label"]: level = "4 - มาก"
+                    elif "ปานกลาง (3)" in choice["label"]: level = "3 - ปานกลาง"
+                    elif "น้อย (2)" in choice["label"]: level = "2 - น้อย"
+                    elif "น้อยที่สุด (1)" in choice["label"]: level = "1 - น้อยที่สุด"
+                    print(f"  {level}")
 
-                if question["type"] == "grid":
-                    # จัดการคำถามแบบกริด
-                    for sub_question in question["sub_questions"]:
-                        print(f"  {sub_question['text']}")
-                        if sub_question["choices"]:
-                            for i, choice in enumerate(sub_question["choices"], start=1):
-                                print(f"    {i}. {choice['label']}")
-
-                            choice_input = input("→ ใส่คะแนน (1-5): ").strip()
-                            if choice_input.isdigit():
-                                index = int(choice_input) - 1
-                                if 0 <= index < len(sub_question["choices"]):
-                                    selected = sub_question["choices"][index]
-                                    selected["element"].click(force=True)
-                elif question["type"] == "single" and question["choices"]:
-                    # จัดการคำถามปกติ
-                    for i, choice in enumerate(question["choices"], start=1):
-                        print(f"  {i}. {choice['label']}")
-
-                    choice_input = input("→ ใส่คะแนน (1-5): ").strip()
+                while True:
+                    choice_input = input("\n→ กรุณาใส่คะแนน (1-5) หรือกด Enter เพื่อข้าม: ").strip()
+                    
+                    if choice_input == "":
+                        print("ข้ามไปข้อถัดไป...")
+                        break
+                    
                     if choice_input.isdigit():
-                        index = int(choice_input) - 1
-                        if 0 <= index < len(question["choices"]):
-                            selected = question["choices"][index]
-                            selected["element"].click(force=True)
-                else:
-                    # กรอกคำตอบแบบข้อความ
-                    answer = input("กรอกคำตอบ (Enter เพื่อข้าม): ").strip()
-                    if answer:
-                        text_input = question["element"].query_selector("input[type='text']")
-                        if text_input:
-                            text_input.fill(answer)
+                        score = int(choice_input)
+                        if 1 <= score <= 5:
+                            # หาตัวเลือกที่ตรงกับคะแนนที่เลือก
+                            score_text = {
+                                5: "มากที่สุด (5)",
+                                4: "มาก (4)",
+                                3: "ปานกลาง (3)",
+                                2: "น้อย (2)",
+                                1: "น้อยที่สุด (1)"
+                            }
+                            
+                            for choice in question["choices"]:
+                                if score_text[score] in choice["label"]:
+                                    try:
+                                        choice["element"].click(force=True)
+                                        print(f"เลือกคะแนน {score} สำเร็จ")
+                                        time.sleep(0.5)
+                                        break
+                                    except Exception as click_error:
+                                        print(f"ไม่สามารถคลิกตัวเลือกได้: {click_error}")
+                            break
+                        else:
+                            print("กรุณาใส่คะแนนระหว่าง 1-5 เท่านั้น")
+                    else:
+                        print("กรุณาใส่ตัวเลขเท่านั้น")
+
+                print("-" * 50)  # เส้นแบ่งระหว่างคำถาม
+
             except Exception as e:
                 print(f"Error while filling question: {e}")
 
 
         def click_next_or_submit(page):
             try:
-                # กำหนดตัวเลือกของปุ่มต่างๆ
                 next_button_selector = "div[role='button'] span.NPEfkd.RveJvd.snByac:has-text('ถัดไป')"
                 submit_button_selector = "div[role='button'] span.NPEfkd.RveJvd.snByac:has-text('ส่ง')"
                 back_button_selector = "div[role='button'] span.NPEfkd.RveJvd.snByac:has-text('กลับ')"
 
-                # รอให้หน้าเว็บโหลดเสร็จ
-                page.wait_for_load_state("networkidle", timeout=20000)  # เพิ่มเวลาให้พอสำหรับหน้าเว็บโหลด
+                page.wait_for_load_state("networkidle", timeout=20000)
                 print("หน้าเว็บโหลดเสร็จแล้ว")
 
-                # ลูปตรวจสอบปุ่ม "ถัดไป" หรือ "ส่ง" หรือ "กลับ"
                 for button_selector in [next_button_selector, submit_button_selector, back_button_selector]:
                     button = page.locator(button_selector)
                     if button.is_visible():
                         print(f"พบปุ่ม {button_selector} จะคลิก")
                         button.click(force=True)
-                        page.wait_for_load_state("networkidle")  # รอให้หน้าใหม่โหลด
+                        page.wait_for_load_state("networkidle")
                         if button_selector == submit_button_selector:
                             print("คลิกปุ่มส่งแล้ว")
                             return False
@@ -143,11 +147,7 @@ def fill_google_form():
                 print(f"เกิดข้อผิดพลาดในการคลิกปุ่ม: {e}")
                 return False
 
-
-
-
         try:
-            # Loop ผ่านคำถามในแต่ละหน้า
             while True:
                 questions = get_questions()
                 if not questions:
@@ -162,7 +162,6 @@ def fill_google_form():
         except Exception as e:
             print(f"Unexpected error: {e}")
         finally:
-            # ปิดเบราว์เซอร์
             print("ปิดเบราว์เซอร์")
             browser.close()
 
